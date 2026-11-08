@@ -106,6 +106,11 @@ pub enum ChannelMsg {
     WindowAdjusted {
         new_size: u32,
     },
+    /// (client only) The application consumed this many bytes of received data. Sent by
+    /// [`Channel::consumed`]; [`Channel::wait`] never returns it.
+    Consumed {
+        bytes: u32,
+    },
     /// (server only)
     Success,
     /// (server only)
@@ -408,6 +413,12 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
         self.send_msg(ChannelMsg::Eof).await
     }
 
+    /// Reports consumed data. With `client::Config::window_adjust_on_consume`, this returns
+    /// it to the server's send window; otherwise it has no effect.
+    pub async fn consumed(&self, bytes: u32) -> Result<(), Error> {
+        self.send_msg(ChannelMsg::Consumed { bytes }).await
+    }
+
     pub async fn exit_status(&self, exit_status: u32) -> Result<(), Error> {
         self.send_msg(ChannelMsg::ExitStatus { exit_status }).await
     }
@@ -642,6 +653,11 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
 
     pub async fn eof(&self) -> Result<(), Error> {
         self.write_half.eof().await
+    }
+
+    /// Reports consumed data, see [`ChannelWriteHalf::consumed`].
+    pub async fn consumed(&self, bytes: u32) -> Result<(), Error> {
+        self.write_half.consumed(bytes).await
     }
 
     pub async fn exit_status(&self, exit_status: u32) -> Result<(), Error> {

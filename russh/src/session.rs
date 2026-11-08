@@ -302,6 +302,40 @@ impl Encrypted {
         }
     }
 
+    /// Accounts for received data without replenishing the window (window adjust on consume).
+    pub fn receive_window(&mut self, channel: ChannelId, len: usize) {
+        if let Some(channel) = self.channels.get_mut(&channel) {
+            let len = u32::try_from(len).unwrap_or(u32::MAX);
+            channel.sender_window_size = channel.sender_window_size.saturating_sub(len);
+        }
+    }
+
+    /// Returns consumed bytes to the peer's send window: in batches of at least an eighth of
+    /// the window, or at once when less than a quarter of the window is left. The window never
+    /// grows past `target`, even if the application reports more than it has received.
+    pub fn consume_window(
+        &mut self,
+        channel: ChannelId,
+        bytes: u32,
+        target: u32,
+    ) -> Result<(), crate::Error> {
+        if let Some(channel) = self.channels.get_mut(&channel) {
+            let room = target.saturating_sub(channel.sender_window_size);
+            channel.consumed = channel.consumed.saturating_add(bytes).min(room);
+            let grant = channel.consumed;
+            if grant > 0 && (grant >= target / 8 || channel.sender_window_size < target / 4) {
+                push_packet!(self.write, {
+                    self.write.push(msg::CHANNEL_WINDOW_ADJUST);
+                    channel.recipient_channel.encode(&mut self.write)?;
+                    grant.encode(&mut self.write)?;
+                });
+                channel.sender_window_size += grant;
+                channel.consumed -= grant;
+            }
+        }
+        Ok(())
+    }
+
     pub fn adjust_window_size(
         &mut self,
         channel: ChannelId,
@@ -783,6 +817,7 @@ impl Encrypted {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    consumed: 0,
                 });
                 return ChannelId(self.last_channel_id.0);
             }
@@ -912,6 +947,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            consumed: 0,
         }
     }
 
@@ -966,7 +1002,98 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            consumed: 0,
         }
+    }
+
+    // window adjust on consume
+
+    fn adjust_amounts(buf: &[u8]) -> Vec<u32> {
+        let mut amounts = Vec::new();
+        let mut cursor = 0;
+        while cursor < buf.len() {
+            let packet_len = BigEndian::read_u32(&buf[cursor..cursor + 4]) as usize;
+            if buf[cursor + 4] == msg::CHANNEL_WINDOW_ADJUST {
+                // packet length, type, recipient channel, amount
+                amounts.push(BigEndian::read_u32(&buf[cursor + 9..cursor + 13]));
+            }
+            cursor += 4 + packet_len;
+        }
+        amounts
+    }
+
+    #[test]
+    fn receive_window_only_decrements() {
+        let channel_id = ChannelId(30);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 70));
+
+        encrypted.receive_window(channel_id, 600);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 424);
+        encrypted.receive_window(channel_id, 5000);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 0);
+        assert!(encrypted.write.is_empty());
+    }
+
+    #[test]
+    fn consume_window_batches_adjustments() {
+        let channel_id = ChannelId(31);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 71));
+        encrypted.receive_window(channel_id, 600);
+
+        // 100 bytes is less than an eighth of the window and enough window is left: wait.
+        encrypted.consume_window(channel_id, 100, 1024).unwrap();
+        assert!(encrypted.write.is_empty());
+
+        encrypted.consume_window(channel_id, 100, 1024).unwrap();
+        assert_eq!(adjust_amounts(&encrypted.write), vec![200]);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 624);
+        assert_eq!(encrypted.channels[&channel_id].consumed, 0);
+    }
+
+    #[test]
+    fn consume_window_adjusts_at_once_when_the_window_is_low() {
+        let channel_id = ChannelId(32);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 72));
+        encrypted.receive_window(channel_id, 900);
+
+        encrypted.consume_window(channel_id, 50, 1024).unwrap();
+        assert_eq!(adjust_amounts(&encrypted.write), vec![50]);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 174);
+    }
+
+    #[test]
+    fn consume_window_never_grows_past_the_target() {
+        let channel_id = ChannelId(33);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 73));
+        encrypted.receive_window(channel_id, 1000);
+
+        // The application reports more than it received.
+        encrypted.consume_window(channel_id, 5000, 1024).unwrap();
+        assert_eq!(adjust_amounts(&encrypted.write), vec![1000]);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 1024);
+
+        encrypted.consume_window(channel_id, 5000, 1024).unwrap();
+        assert_eq!(adjust_amounts(&encrypted.write), vec![1000]);
+        assert_eq!(encrypted.channels[&channel_id].consumed, 0);
+    }
+
+    #[test]
+    fn consume_window_ignores_unknown_channels() {
+        let mut encrypted = test_encrypted();
+        encrypted.consume_window(ChannelId(34), 100, 1024).unwrap();
+        assert!(encrypted.write.is_empty());
     }
 
     // flush_pending (single-channel path)

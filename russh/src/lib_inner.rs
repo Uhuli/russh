@@ -512,6 +512,8 @@ pub(crate) struct ChannelParams {
     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
+    /// Bytes the application has consumed but not yet returned to the peer's send window.
+    consumed: u32,
 }
 
 impl ChannelParams {

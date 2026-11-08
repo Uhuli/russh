@@ -596,9 +596,12 @@ impl Session {
                     return Ok(());
                 }
                 let target = self.common.config.window_size;
+                let on_consume = self.common.config.window_adjust_on_consume;
                 #[allow(clippy::collapsible_if)]
                 if let Some(ref mut enc) = self.common.encrypted {
-                    if enc.adjust_window_size(channel_num, &data, target)? {
+                    if on_consume {
+                        enc.receive_window(channel_num, data.len());
+                    } else if enc.adjust_window_size(channel_num, &data, target)? {
                         let next_window =
                             client.adjust_window(channel_num, self.target_window_size);
                         if next_window > 0 {
@@ -623,9 +626,12 @@ impl Session {
                     return Ok(());
                 }
                 let target = self.common.config.window_size;
+                let on_consume = self.common.config.window_adjust_on_consume;
                 #[allow(clippy::collapsible_if)]
                 if let Some(ref mut enc) = self.common.encrypted {
-                    if enc.adjust_window_size(channel_num, &data, target)? {
+                    if on_consume {
+                        enc.receive_window(channel_num, data.len());
+                    } else if enc.adjust_window_size(channel_num, &data, target)? {
                         let next_window =
                             client.adjust_window(channel_num, self.target_window_size);
                         if next_window > 0 {
@@ -855,6 +861,7 @@ impl Session {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    consumed: 0,
                 };
 
                 let (channel, channel_ref) = Channel::new(

@@ -1779,6 +1779,7 @@ impl Session {
                 self.agent_forward(id, want_reply)?
             }
             Msg::Channel(id, ChannelMsg::Close) => self.close(id)?,
+            Msg::Channel(id, ChannelMsg::Consumed { bytes }) => self.consumed(id, bytes)?,
             Msg::Rekey => self.initiate_rekey()?,
             Msg::AwaitExtensionInfo {
                 extension_name,
@@ -2746,6 +2747,17 @@ pub struct Config {
     pub gex: GexParams,
     /// If active, invoke `set_nodelay(true)` on the ssh socket; disabled by default (i.e. Nagle's algorithm is active).
     pub nodelay: bool,
+    /// If active, a channel's receive window is only replenished after the application reports
+    /// consumed data with [`Channel::consumed`](crate::Channel::consumed), instead of as soon as
+    /// the data arrives. This gives per-channel backpressure: a channel that is not being read
+    /// stops its own sender after one `window_size`, without blocking the other channels of the
+    /// connection.
+    ///
+    /// Report both [`ChannelMsg::Data`] and [`ChannelMsg::ExtendedData`], or the window runs
+    /// out.
+    /// Size `channel_buffer_size` to hold a full window of packets, so the queue of a stalled
+    /// channel never fills up and blocks the session. Disabled by default.
+    pub window_adjust_on_consume: bool,
 }
 
 impl Default for Config {
@@ -2768,6 +2780,7 @@ impl Default for Config {
             anonymous: false,
             gex: Default::default(),
             nodelay: false,
+            window_adjust_on_consume: false,
         }
     }
 }

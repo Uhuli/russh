@@ -545,6 +545,20 @@ impl Session {
         }
     }
 
+    /// Returns consumed bytes to the server's send window
+    /// (see [`Config::window_adjust_on_consume`](super::Config::window_adjust_on_consume)).
+    pub fn consumed(&mut self, channel: ChannelId, bytes: u32) -> Result<(), crate::Error> {
+        if !self.common.config.window_adjust_on_consume {
+            return Ok(());
+        }
+        let target = self.common.config.window_size;
+        if let Some(ref mut enc) = self.common.encrypted {
+            enc.consume_window(channel, bytes, target)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn extended_data(
         &mut self,
         channel: ChannelId,

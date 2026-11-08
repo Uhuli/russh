@@ -2051,6 +2051,7 @@ impl Session {
             pending_data: std::collections::VecDeque::new(),
             pending_eof: false,
             pending_close: false,
+            consumed: 0,
         };
 
         let (channel, channel_ref) = Channel::new(
